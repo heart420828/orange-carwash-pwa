@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>橙式洗車工坊｜PWA</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#ff8c32">
+<style>
+  :root { --brand:#ff8c32; --bg:#fff7ec; }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC","PingFang TC","Helvetica Neue",Arial,"Microsoft JhengHei",sans-serif;background:var(--bg);color:#222;}
+  header{padding:16px;background:#ffe8d0;position:sticky;top:0;z-index:2;border-bottom:1px solid #f0d5b8;}
+  h1{margin:0;font-size:20px;color:#c7601a;text-align:center;}
+  main{max-width:720px;margin:0 auto;padding:16px;}
+  .card{background:#fff;border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.06);padding:16px;margin:16px 0;}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
+  .row>label{min-width:90px;color:#444;}
+  input[type="text"],input[type="date"],textarea,select{width:100%;padding:12px;border:1px solid #ddd;border-radius:10px;background:#fff;}
+  textarea{min-height:72px;resize:vertical;}
+  .btn{appearance:none;border:none;background:var(--brand);color:#000;font-weight:700;padding:12px 16px;border-radius:12px;cursor:pointer;box-shadow:0 4px 10px rgba(0,0,0,.1);}
+  .btn:disabled{opacity:.6;cursor:not-allowed;}
+  .btn.secondary{background:#ffd9b3;}
+  .btn.ghost{background:#fff;border:1px solid #eee;}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;}
+  .chip{padding:8px 12px;border-radius:999px;border:1px solid #ddd;background:#fff;cursor:pointer;}
+  .chip.active{background:#fff2cc;border-color:#f1c232;}
+  small.muted{color:#666;}
+  video,canvas,img.preview{width:100%;border-radius:12px;background:#000;max-height:320px;object-fit:contain;}
+  table{width:100%;border-collapse:collapse;}
+  th,td{padding:10px;border-bottom:1px solid #eee;text-align:left;}
+  tr.overdue{background:#ffeaea;}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;}
+  footer{padding:32px 16px;text-align:center;color:#888;}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#f3f3f3;font-size:12px;margin-left:6px;}
+</style>
+<script>
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js'); }
+</script>
+</head>
+<body>
+  <header><h1>橙式洗車工坊｜PWA</h1></header>
+  <main>
+
+    <section class="card">
+      <h2>新增紀錄</h2>
+      <div class="row">
+        <button id="btnOpenCamera" class="btn">開啟相機</button>
+        <button id="btnSnap" class="btn secondary" disabled>拍照並辨識車牌</button>
+        <button id="btnStop" class="btn ghost" disabled>關閉相機</button>
+      </div>
+      <div style="margin-top:10px;">
+        <video id="video" playsinline muted></video>
+        <canvas id="canvas" style="display:none;"></canvas>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <label>車牌</label>
+        <input id="plate" type="text" placeholder="自動辨識或手動輸入，例如 ABC-1234">
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <label>日期</label>
+        <input id="date" type="date">
+      </div>
+
+      <div style="margin:12px 0 8px;"><b>今天做的項目（可複選）</b></div>
+      <div id="services" class="chips"></div>
+      <small class="muted">回保週期：依所選項目的最短天數自動計算（可在下方設定調整）。</small>
+
+      <div class="row" style="margin-top:12px;">
+        <label>備註</label>
+        <textarea id="notes" placeholder="可留空"></textarea>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <label>下次回保</label>
+        <input id="due" type="text" disabled placeholder="會自動計算">
+      </div>
+
+      <div class="actions" style="margin-top:12px;">
+        <button id="btnSave" class="btn">儲存</button>
+        <button id="btnClear" class="btn ghost">清空</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>紀錄列表 <span class="pill" id="count">0</span></h2>
+      <div class="actions" style="margin-bottom:10px;">
+        <button id="btnExport" class="btn secondary">匯出 CSV</button>
+        <input type="file" id="fileImport" accept=".csv" style="display:none">
+        <button id="btnImport" class="btn ghost">匯入 CSV</button>
+        <button id="btnReset" class="btn ghost">全部刪除</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>車牌</th><th>日期</th><th>項目</th><th>備註</th><th>到期日</th><th></th></tr></thead>
+          <tbody id="list"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>回保週期設定（天）</h2>
+      <div id="cycleForm" class="row" style="align-items:flex-start;gap:10px;"></div>
+      <div class="actions" style="margin-top:10px;">
+        <button id="btnSaveCycles" class="btn">儲存週期設定</button>
+        <small class="muted">建立新紀錄時，系統會以所選項目的「最短天數」作為回保天數。</small>
+      </div>
+    </section>
+
+    <footer>© 橙式洗車工坊 · 本頁資料僅儲存在你的裝置 · 若要拍照需使用 HTTPS 網址開啟本頁</footer>
+  </main>
+
+  <!-- Tesseract.js -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script>
+  const DEFAULT_CYCLES = {'洗車':30,'維護劑':30,'漆面鍍膜':90,'玻璃鍍膜':180,'內裝清潔':60,'引擎室清潔':90,'臭氧/除味':30,'其他':30};
+  const SERVICE_LIST = Object.keys(DEFAULT_CYCLES);
+  const el=(id)=>document.getElementById(id);
+  const $video=el('video'); const $canvas=el('canvas');
+  let stream=null, selected=new Set();
+  let records=JSON.parse(localStorage.getItem('records')||'[]');
+  let cycles=JSON.parse(localStorage.getItem('cycles')||'null')||DEFAULT_CYCLES;
+
+  function initServices(){const box=el('services');box.innerHTML='';SERVICE_LIST.forEach(s=>{const div=document.createElement('div');div.className='chip';div.textContent=s;div.onclick=()=>{if(selected.has(s)){selected.delete(s);div.classList.remove('active');}else{selected.add(s);div.classList.add('active');}updateDuePreview();};box.appendChild(div);});}
+  function initCyclesForm(){const wrap=el('cycleForm');wrap.innerHTML='';SERVICE_LIST.forEach(s=>{const g=document.createElement('div');g.className='row';g.style.minWidth='160px';g.innerHTML=`<label style="min-width:80px">${s}</label><input type="number" id="cycle_${s}" value="${cycles[s]||30}" min="1" style="width:90px">`;wrap.appendChild(g);});}
+  function refreshList(){const tb=el('list');tb.innerHTML='';const now=new Date();records.forEach((r,idx)=>{const tr=document.createElement('tr');const due=new Date(r.dueDate);if(!isNaN(due)&&due<new Date(now.getFullYear(),now.getMonth(),now.getDate()+1)){tr.classList.add('overdue');}tr.innerHTML=`<td>${r.plate||'(未辨識)'}</td><td>${r.date}</td><td>${r.services.join('、')}</td><td>${r.notes||''}</td><td>${r.dueDate}</td><td><button class="btn ghost" data-i="${idx}">刪除</button></td>`;tr.querySelector('button').onclick=(e)=>{const i=parseInt(e.currentTarget.dataset.i,10);records.splice(i,1);localStorage.setItem('records',JSON.stringify(records));refreshList();};tb.appendChild(tr);});el('count').textContent=records.length;}
+  function formatDate(d){const y=d.getFullYear();const m=String(d.getMonth()+1).padStart(2,'0');const day=String(d.getDate()).padStart(2,'0');return `${y}/${m}/${day}`;}
+  function updateDuePreview(){const baseDateStr=el('date').value;if(!baseDateStr){el('due').value='';return;}const base=new Date(baseDateStr);let days=30;if(selected.size>0){days=Math.min(...Array.from(selected).map(s=>cycles[s]||30));}const due=new Date(base.getTime()+days*24*60*60*1000);el('due').value=formatDate(due);}
+  async function openCamera(){if(stream)return;stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});$video.srcObject=stream;await $video.play();el('btnSnap').disabled=false;el('btnStop').disabled=false;}
+  function stopCamera(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}$video.pause();$video.srcObject=null;el('btnSnap').disabled=true;el('btnStop').disabled=true;}
+  async function snapAndOcr(){if(!stream)return;const W=$video.videoWidth,H=$video.videoHeight;$canvas.width=W;$canvas.height=H;const ctx=$canvas.getContext('2d');ctx.drawImage($video,0,0,W,H);const dataUrl=$canvas.toDataURL('image/jpeg',0.85);el('btnSnap').disabled=true;el('btnSnap').textContent='辨識中…';try{const result=await Tesseract.recognize(dataUrl,'eng',{tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'});const raw=(result?.data?.text||'').toUpperCase().replace(/\s+/g,'');const re=/([A-Z]{3}-?\d{4}|\d{3}-?[A-Z]{3}|[A-Z]{2}-?\d{3,4})/;const m=raw.replace(/O/g,'0').match(re);let plate=m?m[1].replace('-',''):'';if(/^[A-Z]{3}\d{4}$/.test(plate)){plate=plate.slice(0,3)+'-'+plate.slice(3);}if(/^\d{3}[A-Z]{3}$/.test(plate)){plate=plate.slice(0,3)+'-'+plate.slice(3);}el('plate').value=plate;}catch(e){alert('辨識失敗，請再試一次或手動輸入');console.error(e);}finally{el('btnSnap').disabled=false;el('btnSnap').textContent='拍照並辨識車牌';}}
+  window.addEventListener('load',()=>{initServices();initCyclesForm();refreshList();const today=new Date();const y=today.getFullYear();const m=String(today.getMonth()+1).padStart(2,'0');const d=String(today.getDate()).padStart(2,'0');el('date').value=`${y}-${m}-${d}`;updateDuePreview();el('date').addEventListener('change',updateDuePreview);el('btnOpenCamera').onclick=async()=>{if(location.protocol!=='https:'&&location.hostname!=='localhost'){alert('iPhone 上啟用相機需要 HTTPS 網址。');}await openCamera();};el('btnStop').onclick=stopCamera;el('btnSnap').onclick=snapAndOcr;el('btnClear').onclick=()=>{el('plate').value='';selected.clear();initServices();el('notes').value='';updateDuePreview();};el('btnSave').onclick=()=>{const plate=el('plate').value.trim().toUpperCase();const date=el('date').value;if(!date){alert('請選擇日期');return;}const services=Array.from(selected);const base=new Date(date);const days=services.length?Math.min(...services.map(s=>cycles[s]||30)):30;const due=new Date(base.getTime()+days*24*60*60*1000);const rec={plate,date:formatDate(base),services,notes:el('notes').value.trim()||null,dueDate:formatDate(due)};records.unshift(rec);localStorage.setItem('records',JSON.stringify(records));refreshList();alert('已儲存 ✅');};document.getElementById('btnExport').onclick=()=>{const header='車牌,日期,服務項目,備註,到期日\n';const lines=records.map(r=>{const svc=r.services.join('|').replaceAll(',','，');const notes=(r.notes||'').replaceAll(',','，');return `${r.plate},${r.date},${svc},${notes},${r.dueDate}`;});const blob=new Blob([header+lines.join('\n')],{type:'text/csv;charset=utf-8;'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='carwash_records.csv';a.click();URL.revokeObjectURL(a.href);};document.getElementById('btnImport').onclick=()=>document.getElementById('fileImport').click();document.getElementById('fileImport').addEventListener('change',(e)=>{const f=e.target.files?.[0];if(!f)return;const reader=new FileReader();reader.onload=()=>{const text=reader.result.toString();const lines=text.split(/\r?\n/).filter(Boolean);const out=[];for(let i=1;i<lines.length;i++){const cols=lines[i].split(',');if(cols.length<5)continue;out.push({plate:cols[0],date:cols[1],services:cols[2].split('|'),notes:cols[3]===''?null:cols[3],dueDate:cols[4]});}records=[...out,...records];localStorage.setItem('records',JSON.stringify(records));refreshList();};reader.readAsText(f,'utf-8');e.target.value='';});document.getElementById('btnReset').onclick=()=>{if(confirm('確定要刪除所有紀錄？此動作無法復原。')){records=[];localStorage.removeItem('records');refreshList();}};document.getElementById('btnSaveCycles').onclick=()=>{SERVICE_LIST.forEach(s=>{const v=parseInt(document.getElementById('cycle_'+s).value,10);cycles[s]=(!isNaN(v)&&v>0)?v:30;});localStorage.setItem('cycles',JSON.stringify(cycles));alert('已儲存回保週期設定 ✅');updateDuePreview();};});</script>
+</body>
+</html>
