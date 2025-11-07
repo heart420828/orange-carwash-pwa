@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>橙式洗車工坊｜PWA（OCR 加強版）</title>
+<title>橙式洗車工坊｜PWA（AI 智慧偵測 + OCR）</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#ff8c32">
 <style>
@@ -16,22 +16,24 @@
   .card{background:#fff;border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.06);padding:16px;margin:16px 0;}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
   .row>label{min-width:90px;color:#444;}
-  input[type="text"],input[type="date"],textarea,select{width:100%;padding:12px;border:1px solid #ddd;border-radius:10px;background:#fff;}
+  input[type="text"],input[type="date"],textarea{width:100%;padding:12px;border:1px solid #ddd;border-radius:10px;background:#fff;}
   textarea{min-height:72px;resize:vertical;}
   .btn{appearance:none;border:none;background:var(--brand);color:#000;font-weight:700;padding:12px 16px;border-radius:12px;cursor:pointer;box-shadow:0 4px 10px rgba(0,0,0,.1);}
   .btn.secondary{background:#ffd9b3;}
   .btn.ghost{background:#fff;border:1px solid #eee;}
   small.muted{color:#666;}
-  video,canvas,img.preview{width:100%;border-radius:12px;background:#000;max-height:320px;object-fit:contain;}
+  video,canvas{width:100%;border-radius:12px;background:#000;max-height:320px;object-fit:contain;}
   table{width:100%;border-collapse:collapse}
   th,td{padding:8px;border-bottom:1px solid #eee;font-size:14px;text-align:left;}
 </style>
-<script>
-if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js'); }
-</script>
+<!-- OpenCV.js（提供邊緣/輪廓偵測） -->
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<!-- Tesseract.js（OCR） -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js'); }</script>
 </head>
 <body>
-<header><h1>橙式洗車工坊｜PWA（OCR 加強版）</h1></header>
+<header><h1>橙式洗車工坊｜PWA（AI 智慧偵測 + OCR）</h1></header>
 <main>
 
   <section class="card">
@@ -42,12 +44,14 @@ if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js'); }
       <button id="btnStop" class="btn ghost" disabled>關閉相機</button>
       <input id="filePicker" type="file" accept="image/*" style="display:none">
       <button id="btnPick" class="btn ghost">從相簿選擇照片</button>
+      <button id="btnAIDetect" class="btn">智慧偵測（AI）</button>
     </div>
     <div style="margin-top:10px;">
       <video id="video" playsinline muted></video>
       <canvas id="canvas" style="display:none;"></canvas>
+      <canvas id="preview" style="margin-top:8px;background:#111;"></canvas>
     </div>
-    <small class="muted">⭐ 提升成功率：車牌置中、光線充足、避免斜角與反光。相簿清晰照成功率更高。</small>
+    <small class="muted">⭐ 小訣竅：車牌置中、光線充足、避免斜角與反光。若即時畫面糊，從相簿選清楚照片成功率更高。</small>
 
     <div class="row" style="margin-top:12px;">
       <label>車牌</label>
@@ -86,15 +90,49 @@ if('serviceWorker' in navigator){ navigator.serviceWorker.register('./sw.js'); }
   </section>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
-/* === 業務邏輯 === */
-const SERVICES = ['洗車','維護劑','漆面鍍膜','玻璃鍍膜','內裝清潔','引擎室清潔','臭氧/除味','其他'];
-const DEFAULT_CYCLES = {'洗車':30,'維護劑':30,'漆面鍍膜':90,'玻璃鍍膜':180,'內裝清潔':60,'引擎室清潔':90,'臭氧/除味':30,'其他':30};
-let cycles = JSON.parse(localStorage.getItem('cycles')||'null')||DEFAULT_CYCLES;
-let records = JSON.parse(localStorage.getItem('records')||'[]');
+/* ====== 共用 ====== */
 const el=id=>document.getElementById(id);
-const $video=el('video'), $canvas=el('canvas'); let stream=null; let selected=new Set();
+const $video=el('video'), $canvas=el('canvas'), $preview=el('preview');
+let stream=null, lastDataUrl=null;
+
+/* 服務清單（依你的需求） */
+const SERVICES = [
+  '洗車','維護劑','漆面鍍膜','玻璃鍍膜','內裝清潔',
+  '濾網','髒污','雨刷','除菌','其他'
+];
+
+/* 預設週期（天） */
+const DEFAULT_CYCLES = {
+  '洗車': 30,
+  '維護劑': 30,
+  '漆面鍍膜': 90,
+  '玻璃鍍膜': 180,
+  '內裝清潔': 60,
+  '濾網': 180,
+  '髒污': 30,
+  '雨刷': 180,
+  '除菌': 30,
+  '其他': 30
+};
+
+/* 讀取 cycles 並做資料遷移 */
+let cycles = JSON.parse(localStorage.getItem('cycles') || 'null') || DEFAULT_CYCLES;
+// 舊名 → 新名
+if (cycles['臭氧/除味'] && !cycles['除菌']) {
+  cycles['除菌'] = cycles['臭氧/除味'];
+  delete cycles['臭氧/除味'];
+}
+// 移除已刪項目
+delete cycles['引擎室清潔'];
+// 確保新/現有都存在
+for (const k of Object.keys(DEFAULT_CYCLES)) {
+  if (cycles[k] == null) cycles[k] = DEFAULT_CYCLES[k];
+}
+localStorage.setItem('cycles', JSON.stringify(cycles));
+
+let records = JSON.parse(localStorage.getItem('records')||'[]');
+let selected = new Set();
 
 function initServices(){
   const box=el('services'); box.innerHTML='';
@@ -117,24 +155,24 @@ function refreshList(){
     tb.appendChild(tr);
   });
 }
+function drawToPreview(dataUrl){
+  lastDataUrl=dataUrl;
+  const img=new Image(); img.onload=()=>{
+    const maxW=$preview.clientWidth||700, ratio=Math.min(1, maxW/img.width);
+    const w=Math.round(img.width*ratio), h=Math.round(img.height*ratio);
+    $preview.width=w; $preview.height=h;
+    const ctx=$preview.getContext('2d'); ctx.clearRect(0,0,w,h); ctx.drawImage(img,0,0,w,h);
+  }; img.src=dataUrl;
+}
 
-/* === 台灣車牌：清理 + 正規化 === */
+/* ====== OCR：清理 + 正規化 ====== */
 function postProcessPlate(raw){
   if(!raw) return '';
-  raw = raw.toUpperCase().replace(/\s+/g,'');
-  // 常見誤判修正
-  raw = raw.replace(/O/g,'0').replace(/I/g,'1').replace(/Z/g,'2').replace(/S/g,'5').replace(/B/g,'8');
-  // 支援多種樣式
-  const patterns = [
-    /([A-Z]{3}-?\d{4})/,        // ABC-1234
-    /([A-Z]{2}-?\d{3,4})/,      // AB-1234 / AB-123
-    /(\d{3}-?[A-Z]{3})/,        // 123-ABC
-    /([A-Z]\d{3}-?[A-Z]{2})/    // A123-BC（少見）
-  ];
+  raw=raw.toUpperCase().replace(/\s+/g,'');
+  raw=raw.replace(/O/g,'0').replace(/I/g,'1').replace(/Z/g,'2').replace(/S/g,'5').replace(/B/g,'8');
+  const patterns=[/([A-Z]{3}-?\d{4})/,/([A-Z]{2}-?\d{3,4})/,/(\d{3}-?[A-Z]{3})/,/([A-Z]\d{3}-?[A-Z]{2})/];
   for(const re of patterns){
-    const m = raw.match(re);
-    if(m){
-      let p = m[1].replace('-','');
+    const m=raw.match(re); if(m){ let p=m[1].replace('-','');
       if(/^[A-Z]{3}\d{4}$/.test(p)) return p.slice(0,3)+'-'+p.slice(3);
       if(/^\d{3}[A-Z]{3}$/.test(p)) return p.slice(0,3)+'-'+p.slice(3);
       if(/^[A-Z]{2}\d{3,4}$/.test(p)) return p.slice(0,2)+'-'+p.slice(2);
@@ -143,105 +181,137 @@ function postProcessPlate(raw){
   }
   return raw;
 }
-
-/* === 影像前處理 + OCR === */
 async function ocrImageDataURL(dataUrl){
   const img=new Image(); img.src=dataUrl; await img.decode();
-  const w=img.naturalWidth, h=img.naturalHeight;
-
-  // 放大 1.2~1.8x，提升辨識
-  const scale = Math.min(1.8, Math.max(1.2, 1200/Math.min(w,h)));
+  const w=img.naturalWidth,h=img.naturalHeight, scale=Math.min(1.8, Math.max(1.2, 1200/Math.min(w,h)));
   const cw=Math.round(w*scale), ch=Math.round(h*scale);
-
   const c=document.createElement('canvas'); c.width=cw; c.height=ch;
-  const ctx=c.getContext('2d');
-
-  // 強化影像：對比/亮度/飽和
-  ctx.filter='contrast(160%) brightness(115%) saturate(110%)';
-  ctx.drawImage(img,0,0,cw,ch);
-
-  // 轉灰階 + 二值化
-  const imgd=ctx.getImageData(0,0,cw,ch); const d=imgd.data;
-  for(let i=0;i<d.length;i+=4){
-    const g = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114)|0;
-    const b = g>140?255:0; d[i]=d[i+1]=d[i+2]=b;
-  }
+  const ctx=c.getContext('2d'); ctx.filter='contrast(160%) brightness(115%) saturate(110%)'; ctx.drawImage(img,0,0,cw,ch);
+  const imgd=ctx.getImageData(0,0,cw,ch), d=imgd.data;
+  for(let i=0;i<d.length;i+=4){ const g=(d[i]*.299+d[i+1]*.587+d[i+2]*.114)|0; const b=g>140?255:0; d[i]=d[i+1]=d[i+2]=b; }
   ctx.putImageData(imgd,0,0);
-
-  const enhanced = c.toDataURL('image/png');
-
-  // psm 7: 單行文字；白名單只允許字母數字與-
-  const result = await Tesseract.recognize(enhanced,'eng',{
-    tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-    tessedit_pageseg_mode:7
-  });
-  return postProcessPlate(result?.data?.text||'');
+  const enhanced=c.toDataURL('image/png');
+  const res=await Tesseract.recognize(enhanced,'eng',{tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',tessedit_pageseg_mode:7});
+  return postProcessPlate(res?.data?.text||'');
 }
 
-/* === 相機 / 相簿流程 === */
-async function openCamera(){
-  if(location.protocol!=='https:' && location.hostname!=='localhost'){
-    alert('iPhone 上要使用相機需 HTTPS 網址'); return;
+/* ====== AI（OpenCV.js）偵測車牌 ROI ====== */
+function detectPlateROIWithCV(imgEl){
+  const src=cv.imread(imgEl); // BGR
+  const gray=new cv.Mat(); cv.cvtColor(src, gray, cv.COLOR_BGR2GRAY, 0);
+  const blur=new cv.Mat(); cv.GaussianBlur(gray, blur, new cv.Size(5,5), 0, 0, cv.BORDER_DEFAULT);
+  const edges=new cv.Mat(); cv.Canny(blur, edges, 60, 180);
+  const kernel=cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5,3));
+  const morph=new cv.Mat(); cv.morphologyEx(edges, morph, cv.MORPH_CLOSE, kernel);
+
+  const contours=new cv.MatVector(); const hierarchy=new cv.Mat();
+  cv.findContours(morph, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let bestRect=null, bestScore=-1;
+  for(let i=0;i<contours.size();i++){
+    const cnt=contours.get(i);
+    const peri=cv.arcLength(cnt, true);
+    const approx=new cv.Mat();
+    cv.approxPolyDP(cnt, approx, 0.03*peri, true);
+    if(approx.rows===4){
+      const rect=cv.boundingRect(approx);
+      const ar = rect.width / rect.height;
+      const area = rect.width * rect.height;
+      if(ar>2 && ar<6 && area > src.cols*src.rows*0.01){
+        const roi = edges.roi(rect);
+        const nonZero = cv.countNonZero(roi);
+        const score = nonZero / area;
+        if(score > bestScore){ bestScore=score; bestRect=rect; }
+        roi.delete();
+      }
+    }
+    cnt.delete(); approx.delete();
   }
-  if(stream) return;
-  stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+  gray.delete(); blur.delete(); edges.delete(); morph.delete(); contours.delete(); hierarchy.delete();
+  if(!bestRect){ src.delete(); return null; }
+  const r = {x:bestRect.x, y:bestRect.y, width:bestRect.width, height:bestRect.height};
+  src.delete();
+  return r;
+}
+
+async function aiDetectAndOcr(){
+  if(!lastDataUrl){ alert('請先拍照或選一張照片'); return; }
+  if(!(window.cv && cv.Mat)) { alert('OpenCV.js 還在載入，請稍候再試'); return; }
+  // 以 preview 當來源
+  const rect = detectPlateROIWithCV($preview);
+  if(!rect){ alert('沒找到疑似車牌的區塊，請換角度或光線再試'); return; }
+  // 畫框
+  const ctx=$preview.getContext('2d'); ctx.strokeStyle='#ff8c32'; ctx.lineWidth=3; ctx.setLineDash([8,6]); ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+  // 裁切 ROI → OCR
+  const src=document.createElement('canvas'); src.width=$preview.width; src.height=$preview.height; src.getContext('2d').drawImage($preview,0,0);
+  const roi=document.createElement('canvas'); roi.width=rect.width; roi.height=rect.height;
+  roi.getContext('2d').drawImage(src, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+  const dataUrl=roi.toDataURL('image/png');
+  el('plate').value='辨識中…';
+  const plate=await ocrImageDataURL(dataUrl);
+  el('plate').value=plate||'';
+}
+
+/* ====== 相機 / 相簿 ====== */
+function drawToPreview(dataUrl){
+  lastDataUrl=dataUrl;
+  const img=new Image(); img.onload=()=>{
+    const maxW=$preview.clientWidth||700, ratio=Math.min(1, maxW/img.width);
+    const w=Math.round(img.width*ratio), h=Math.round(img.height*ratio);
+    $preview.width=w; $preview.height=h;
+    const ctx=$preview.getContext('2d'); ctx.clearRect(0,0,w,h); ctx.drawImage(img,0,0,w,h);
+  }; img.src=dataUrl;
+}
+async function openCamera(){
+  if(location.protocol!=='https:' && location.hostname!=='localhost'){ alert('iPhone 要用相機需 HTTPS'); return; }
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
   $video.srcObject=stream; await $video.play();
   el('btnSnap').disabled=false; el('btnStop').disabled=false;
 }
-function stopCamera(){
-  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-  $video.pause(); $video.srcObject=null; el('btnSnap').disabled=true; el('btnStop').disabled=true;
-}
+function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } $video.pause(); $video.srcObject=null; el('btnSnap').disabled=true; el('btnStop').disabled=true; }
 async function snap(){
   if(!stream) return;
-  const W=$video.videoWidth, H=$video.videoHeight;
+  const W=$video.videoWidth,H=$video.videoHeight;
   $canvas.width=W; $canvas.height=H;
-  const ctx=$canvas.getContext('2d');
-  ctx.filter='contrast(160%) brightness(115%) saturate(110%)';
-  ctx.drawImage($video,0,0,W,H);
-  el('btnSnap').disabled=true; el('btnSnap').textContent='辨識中…';
+  const ctx=$canvas.getContext('2d'); ctx.drawImage($video,0,0,W,H);
+  const dataUrl=$canvas.toDataURL('image/jpeg',0.92);
+  drawToPreview(dataUrl);
+  // 先試 AI 偵測；失敗再整圖 OCR
+  el('plate').value='辨識中…';
   try{
-    const dataUrl=$canvas.toDataURL('image/jpeg',0.92);
-    const plate=await ocrImageDataURL(dataUrl);
-    el('plate').value=plate||'';
-  }catch(e){ console.error(e); alert('辨識失敗，請再試一次或改用相簿照片/手動輸入'); }
-  finally{ el('btnSnap').disabled=false; el('btnSnap').textContent='拍照並辨識車牌'; }
+    await aiDetectAndOcr();
+    if(!el('plate').value || el('plate').value==='辨識中…'){ el('plate').value=await ocrImageDataURL(dataUrl); }
+  }catch{ el('plate').value=await ocrImageDataURL(dataUrl); }
 }
-async function pickFile(){
+function pickFile(){
   const f=el('filePicker').files?.[0]; if(!f) return;
   const reader=new FileReader();
-  reader.onload=async()=>{ 
-    try{ el('plate').value = await ocrImageDataURL(reader.result.toString()) || ''; }
-    catch(e){ alert('辨識失敗，請換一張更清晰的照片'); }
-    finally{ el('filePicker').value=''; }
-  };
+  reader.onload=async()=>{ lastDataUrl=reader.result.toString(); drawToPreview(lastDataUrl); el('plate').value=await ocrImageDataURL(lastDataUrl); };
   reader.readAsDataURL(f);
 }
 
-/* === 儲存 === */
+/* ====== 儲存 ====== */
 function saveRecord(){
   const plate=el('plate').value.trim().toUpperCase();
-  const ds=el('date').value; if(!ds){alert('請選擇日期');return;}
+  const ds=el('date').value; if(!ds){alert('請選日期');return;}
   const base=new Date(ds);
   const list=Array.from(selected);
   const days=list.length?Math.min(...list.map(s=>cycles[s]||30)):30;
   const due=new Date(base.getTime()+days*86400000);
   const rec={plate,date:formatDate(base),services:list,notes:el('notes').value.trim()||null,dueDate:formatDate(due)};
-  records.unshift(rec); localStorage.setItem('records',JSON.stringify(records));
-  refreshList(); alert('已儲存 ✅');
+  records.unshift(rec); localStorage.setItem('records',JSON.stringify(records)); refreshList(); alert('已儲存 ✅');
 }
 
-/* === 初始化 === */
+/* ====== 初始化 ====== */
 window.addEventListener('load',()=>{
   initServices(); refreshList();
-  const today=new Date(); const y=today.getFullYear(); const m=String(today.getMonth()+1).padStart(2,'0'); const d=String(today.getDate()).padStart(2,'0');
-  el('date').value=`${y}-${m}-${d}`; updateDuePreview();
-
+  const t=new Date(); el('date').value=`${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`; updateDuePreview();
   el('btnOpenCamera').onclick=openCamera;
   el('btnStop').onclick=stopCamera;
   el('btnSnap').onclick=snap;
   el('btnPick').onclick=()=>el('filePicker').click();
   el('filePicker').addEventListener('change',pickFile);
+  el('btnAIDetect').onclick=aiDetectAndOcr;
   el('btnClear').onclick=()=>{ el('plate').value=''; selected.clear(); initServices(); el('notes').value=''; updateDuePreview(); };
   el('date').addEventListener('change',updateDuePreview);
   el('btnSave').onclick=saveRecord;
